@@ -83,7 +83,7 @@ class BlackboardState(TypedDict):
     """黑板系统的共享状态管理结构"""
     user_request: str
     blackboard: list[str]  # 共享信息板，所有智能体可读写
-    available_agents: list[str]  # 可用的专家智能体列表
+    available_agents: list[str]  # 可用的专家智能体列表，用于控制器选择下一个执行的智能体
     next_agent: Optional[str]  # 控制器决定的下一个智能体
 
 # 控制器决策模型
@@ -464,13 +464,26 @@ def create_blackboard_specialist(llm, search_tool, agent_name, description):
     return specialist_node
 
 def controller_node(state: BlackboardState, llm: ModelScopeChat):
-    """黑板系统的中央控制器：决定下一个执行的智能体"""
+    """黑板系统的中央控制器：决定下一个执行的智能体
+    
+    Args:
+        state: 黑板系统的当前状态
+        llm: 语言模型实例，用于生成决策
+        
+    Returns:
+        更新后的状态，包含下一个要执行的智能体名称
+    """
     console.print("--- 控制器：分析黑板... ---")
+    
+    # 使用结构化输出的语言模型，确保决策结果符合ControllerDecision格式
     controller_llm = llm.with_structured_output(ControllerDecision)
     
+    # 准备黑板内容供控制器分析
     blackboard_content = "\n\n".join(state["blackboard"]) if state["blackboard"] else "信息板目前为空。"
+    # 获取可用智能体列表：这个列表在系统初始化时设定（见run_blackboard_system函数）
     agent_list = state["available_agents"]
     
+    # 构建提示词，指导控制器做出决策
     prompt = f"""你是多智能体系统的中央控制器。你的工作是分析共享黑板和原始用户请求，决定下一步应该运行哪个专家智能体。
 
 **原始用户请求：**
@@ -493,27 +506,45 @@ def controller_node(state: BlackboardState, llm: ModelScopeChat):
 请返回你的决策和理由。
 """
     
+    # 调用语言模型生成决策
     decision_result = controller_llm.invoke(prompt)
     console.print(f"--- 控制器：决定调用 '{decision_result.next_agent}'。原因：{decision_result.reasoning} ---")
     
+    # 返回只包含next_agent的更新状态
+    # 这个值会被router函数用于决定下一个执行的节点
     return {"next_agent": decision_result.next_agent}
 
 def build_blackboard_system(llm: ModelScopeChat, search_tool):
-    """构建黑板系统"""
+    """构建黑板系统
+    
+    Args:
+        llm: 语言模型实例
+        search_tool: 搜索工具实例
+        
+    Returns:
+        编译后的黑板系统工作流图
+    """
     # 创建专家智能体
     news_analyst = create_blackboard_specialist(llm, search_tool, "新闻分析师", "新闻分析师，负责查找和分析最新新闻")
     technical_analyst = create_blackboard_specialist(llm, search_tool, "技术分析师", "技术分析师，负责股票技术分析")
     financial_analyst = create_blackboard_specialist(llm, search_tool, "财务分析师", "财务分析师，负责公司财务表现分析")
     report_writer = create_blackboard_specialist(llm, search_tool, "报告撰写者", "报告撰写者，负责综合所有信息生成最终报告")
     
-    # 构建黑板图
+    # 构建黑板图：使用StateGraph创建有状态工作流
+    # BlackboardState是工作流的共享状态类型
     blackboard_graph_builder = StateGraph(BlackboardState)
     
-    # 添加节点
-    blackboard_graph_builder.add_node("news_analyst", news_analyst)
-    blackboard_graph_builder.add_node("technical_analyst", technical_analyst)
-    blackboard_graph_builder.add_node("financial_analyst", financial_analyst)
-    blackboard_graph_builder.add_node("report_writer", report_writer)
+    # 添加节点：每个节点代表一个智能体或控制器
+    # 节点函数会接收当前状态并返回更新后的状态
+    blackboard_graph_builder.add_node("news_analyst", news_analyst)          # 新闻分析师节点
+    blackboard_graph_builder.add_node("technical_analyst", technical_analyst)  # 技术分析师节点
+    blackboard_graph_builder.add_node("financial_analyst", financial_analyst)  # 财务分析师节点
+    blackboard_graph_builder.add_node("report_writer", report_writer)        # 报告撰写者节点
+    
+    # 控制器节点：使用lambda函数封装controller_node
+    # StateGraph要求节点函数只接受state一个参数
+    # 但controller_node需要state和llm两个参数
+    # 所以使用lambda创建闭包，将llm作为固定参数传递
     blackboard_graph_builder.add_node("controller", lambda state: controller_node(state, llm))
     
     # 设置入口点
@@ -541,12 +572,12 @@ def run_blackboard_system(app, query):
     console.print("[bold cyan]黑板系统运行启动[/bold cyan]")
     console.print("="*60)
     
-    # 初始状态
+    # 初始状态：为黑板系统设置初始参数
     initial_state = {
-        "user_request": query,
-        "blackboard": [],
-        "available_agents": ["news_analyst", "technical_analyst", "financial_analyst", "report_writer"],
-        "next_agent": None
+        "user_request": query,                 # 用户的原始查询
+        "blackboard": [],                       # 初始黑板为空列表
+        "available_agents": ["news_analyst", "technical_analyst", "financial_analyst", "report_writer"],  # 初始化所有可用的专家智能体
+        "next_agent": None                      # 初始时没有下一个智能体
     }
     
     result = app.invoke(initial_state)
@@ -622,12 +653,43 @@ def format_blackboard_content(blackboard: list[str]) -> str:
 # =========================
 
 def parse_args():
-    """解析命令行参数"""
+    """解析命令行参数
+    
+    命令行参数说明：
+    - --query: 自定义查询内容，默认值为NVIDIA相关新闻分析请求
+    - --no-sequential: 布尔选项，用于跳过线性多智能体系统的运行
+    - --debug: 布尔选项，用于启用调试模式，显示更详细的运行信息
+    
+    action参数说明：
+    - action="store_true": 用于定义布尔类型的命令行选项
+    - 当用户在命令行中指定该选项（如--no-sequential）时，对应的变量会被设置为True
+    - 不指定时，默认值为False
+    
+    使用示例：
+    python 07_blackboard.py                  # 使用默认查询运行完整系统
+    python 07_blackboard.py --query "分析阿里巴巴的最新动态"  # 使用自定义查询
+    python 07_blackboard.py --no-sequential   # 只运行黑板系统，跳过线性系统
+    python 07_blackboard.py --debug           # 启用调试模式运行
+    python 07_blackboard.py --query "分析腾讯" --no-sequential --debug  # 组合使用多个参数
+    """
     parser = argparse.ArgumentParser(description="黑板系统多智能体演示")
-    parser.add_argument("--query", type=str, default="查找 NVIDIA 的最新重大新闻。根据该新闻的情绪，进行技术分析（如果新闻是中性或积极的）或财务分析（如果新闻是负面的）。",
+    
+    # 定义字符串类型参数，用于接收用户的自定义查询
+    parser.add_argument("--query", 
+                        type=str, 
+                        default="查找 NVIDIA 的最新重大新闻。根据该新闻的情绪，进行技术分析（如果新闻是中性或积极的）或财务分析（如果新闻是负面的）。",
                         help="自定义查询内容")
-    parser.add_argument("--no-sequential", action="store_true", help="跳过线性系统运行")
-    parser.add_argument("--debug", action="store_true", help="启用调试模式")
+    
+    # 定义布尔类型参数，使用action="store_true"，不接收额外值
+    parser.add_argument("--no-sequential", 
+                        action="store_true", 
+                        help="跳过线性系统运行")
+    
+    # 定义布尔类型参数，用于启用调试模式
+    parser.add_argument("--debug", 
+                        action="store_true", 
+                        help="启用调试模式")
+    
     return parser.parse_args()
 
 def main():

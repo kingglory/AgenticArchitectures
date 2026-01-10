@@ -687,6 +687,80 @@ def visualize_planner_executor_verifier():
                 st.markdown("#### 2. 最终答案")
                 st.markdown(final_state["final_answer"])
 
+
+def visualize_blackboard_system():
+    """可视化黑板系统"""
+    st.markdown("### 07 - 黑板系统 (Blackboard System)")
+    
+    # 加载07_blackboard模块
+    spec = importlib.util.spec_from_file_location("blackboard", "07_blackboard.py")
+    blackboard = importlib.util.module_from_spec(spec)
+    sys.modules["blackboard"] = blackboard
+    spec.loader.exec_module(blackboard)
+    
+    # 从模块中导入所需函数和类
+    init_llm = blackboard.init_llm
+    build_blackboard_system = blackboard.build_blackboard_system
+    run_blackboard_system = blackboard.run_blackboard_system
+    search_tool = blackboard.search_tool
+    
+    # 用户输入区域
+    default_request = "查找 NVIDIA 的最新重大新闻。根据该新闻的情绪，进行技术分析（如果新闻是中性或积极的）或财务分析（如果新闻是负面的）。"
+    user_request = st.text_area("输入您的请求", value=default_request, height=100)
+    
+    # 执行按钮
+    if st.button("开始执行黑板系统工作流"):
+        # 检查API密钥
+        if not os.environ.get("MODELSCOPE_API_KEY"):
+            st.error("请先设置API密钥")
+        else:
+            with st.spinner("正在初始化系统..."):
+                # 初始化LLM
+                llm = init_llm()
+                
+                # 构建黑板系统
+                blackboard_app = build_blackboard_system(llm, search_tool)
+            
+            st.success("系统初始化完成！")
+            
+            # 创建日志显示区域
+            logs_container = st.empty()
+            log_content = ""
+            
+            # 重定向控制台输出到日志区域
+            import io
+            from contextlib import redirect_stdout
+            
+            f = io.StringIO()
+            with redirect_stdout(f):
+                # 执行工作流
+                final_result = run_blackboard_system(blackboard_app, user_request)
+                
+            # 获取控制台输出
+            log_content = f.getvalue()
+            
+            # 显示日志
+            st.markdown("### 执行日志")
+            st.text_area("", value=log_content, height=300, disabled=True)
+            
+            # 显示结果
+            st.markdown("### 执行结果")
+            
+            # 显示最终报告
+            for item in final_result["blackboard"]:
+                if "[报告撰写者]" in item:
+                    st.markdown("#### 1. 最终报告")
+                    st.markdown(item.replace("[报告撰写者]", ""))
+                    break
+            
+            # 显示信息板完整内容
+            st.markdown("#### 2. 信息板完整内容")
+            for i, item in enumerate(final_result["blackboard"]):
+                st.markdown(f"**[{i+1}] {item.splitlines()[0]}**")
+                content = "\n".join(item.splitlines()[1:])
+                st.markdown(content)
+                st.markdown("")
+
 # 根据选择的架构显示不同的内容
 if "01 - 反思型智能体" in selected_architecture:
     visualize_reflection()
@@ -700,6 +774,8 @@ elif "05 - 多智能体系统" in selected_architecture:
     visualize_multi_agent()
 elif "06 - 规划→执行→验证智能体" in selected_architecture:
     visualize_planner_executor_verifier()
+elif "07 - 黑板系统" in selected_architecture:
+    visualize_blackboard_system()
 
 # 页脚信息
 st.markdown("---")
@@ -712,6 +788,7 @@ st.markdown("- **03 - 反应型智能体**：基于环境反馈做出反应的�
 st.markdown("- **04 - 规划型智能体**：能够制定和执行任务计划的智能体")
 st.markdown("- **05 - 多智能体系统**：由多个专业智能体组成的协作系统")
 st.markdown("- **06 - 规划→执行→验证智能体**：能够检测并纠正执行错误的智能体架构")
+st.markdown("- **07 - 黑板系统**：多智能体协作的黑板系统，包含专家智能体和动态控制器")
 
 st.markdown("\n### 技术栈")
 st.markdown("- **LangGraph**：构建智能体工作流")
